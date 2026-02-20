@@ -5,3 +5,6 @@ pandas
 scipy
 python-multipart
 httpx
+pydub
+imageio-ffmpeg
+tensorflow
