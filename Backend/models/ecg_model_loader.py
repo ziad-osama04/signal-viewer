@@ -1,4 +1,3 @@
-import torch
 import joblib
 import os
 import sys
@@ -25,11 +24,11 @@ def _find_backend_root(start: str) -> str:
 BACKEND_ROOT = _find_backend_root(_THIS_DIR)
 MODELS_DIR   = os.path.join(BACKEND_ROOT, "models")
 
-# Ensure model.py (ECGResNet architecture) is importable
+# Ensure keras_ecg_model is importable
 sys.path.append(BACKEND_ROOT)
 sys.path.append(_THIS_DIR)
 
-from model import ECGResNet
+from keras_ecg_model import get_model
 
 
 class ECGModelLoader:
@@ -40,28 +39,23 @@ class ECGModelLoader:
             cls._instance = super().__new__(cls)
             cls._instance.deep_model    = None
             cls._instance.classic_model = None
-            cls._instance.device        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             cls._instance.load_models()
         return cls._instance
 
     def load_models(self):
         print(f"🔍 ECG model search path: {MODELS_DIR}")
 
-        # ── 1. PyTorch deep-learning model ────────────────────────────────────
-        pt_path = os.path.join(MODELS_DIR, "ecg_model.pt")
-        if os.path.exists(pt_path):
+        # ── 1. Keras deep-learning model ────────────────────────────────────
+        h5_path = os.path.join(MODELS_DIR, "keras_ecg_model.hdf5")
+        if os.path.exists(h5_path):
             try:
-                self.deep_model = ECGResNet(n_classes=5)
-                checkpoint  = torch.load(pt_path, map_location=self.device)
-                state_dict  = checkpoint.get("model_state_dict", checkpoint)
-                self.deep_model.load_state_dict(state_dict)
-                self.deep_model.to(self.device)
-                self.deep_model.eval()
-                print(f"✅ ECG deep model loaded  ← {pt_path}")
+                self.deep_model = get_model(n_classes=6, last_layer='sigmoid')
+                self.deep_model.load_weights(h5_path)
+                print(f"✅ ECG deep model loaded  ← {h5_path}")
             except Exception as e:
                 print(f"❌ Failed to load ECG deep model: {e}")
         else:
-            print(f"⚠️  Not found: {pt_path}")
+            print(f"⚠️  Not found: {h5_path}")
 
         # ── 2. Classic ML model (Random Forest) ───────────────────────────────
         pkl_path = os.path.join(MODELS_DIR, "random_forest_model.pkl")

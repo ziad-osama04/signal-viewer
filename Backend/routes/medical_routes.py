@@ -36,71 +36,78 @@ async def process_medical(file: UploadFile = File(...)):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # NEW — WFDB endpoint
-# Accepts multipart/form-data:
-#   dat_file  : binary .dat (UploadFile)
-#   meta      : JSON string — {nLeads, fs, nSamples, leadNames, gains, baselines}
-#   xyz_file  : optional .xyz plaintext (UploadFile)
+# Accepts multi-part file uploads for .hea, .dat, .xyz
 # Returns same shape as /process so the frontend works identically
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/process-wfdb")
 async def process_wfdb(
+    hea_file: UploadFile = File(...),
     dat_file: UploadFile = File(...),
-    meta:     str        = Form(...),           # JSON string — NOT Form type annotation
     xyz_file: Optional[UploadFile] = File(None)
 ):
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     try:
-        # ── 1. Parse meta JSON ────────────────────────────────────────────────
-        try:
-            m = json.loads(meta)
-        except Exception:
-            return {"error": "Invalid meta", "details": "meta must be valid JSON"}
-
-        n_leads    = int(m.get("nLeads",   1))
-        fs         = float(m.get("fs",     360))
-        n_samp_h   = int(m.get("nSamples", 0))
-        lead_names = m.get("leadNames", [f"Lead{i+1}" for i in range(n_leads)])
-        gains      = m.get("gains",     [200.0] * n_leads)
-        baselines  = m.get("baselines", [0]     * n_leads)
-
-        # ── 2. Read & decode .dat (WFDB format 16 = 16-bit LE multiplexed) ───
-        dat_bytes       = await dat_file.read()
-        total_bytes     = len(dat_bytes)
-        bytes_per_frame = n_leads * 2
-
-        if bytes_per_frame == 0:
-            return {"error": "nLeads is 0", "details": "Check .hea file"}
-
-        n_samples = (n_samp_h if n_samp_h > 0 else total_bytes // bytes_per_frame)
-        n_samples = min(n_samples, total_bytes // bytes_per_frame)
-
-        if n_samples == 0:
-            return {"error": "Empty .dat", "details": f"bytes={total_bytes} nLeads={n_leads}"}
-
-        # Decode
-        raw = struct.unpack_from(f"<{n_samples * n_leads}h", dat_bytes, 0)
-        arr = np.array(raw, dtype=np.float32).reshape(n_samples, n_leads)
-
-        # Apply gain / baseline → physical units (mV)
-        for ch in range(n_leads):
-            g = gains[ch] if gains[ch] != 0 else 200.0
-            arr[:, ch] = (arr[:, ch] - baselines[ch]) / g
-
-        # ── 3. Optionally read .xyz ───────────────────────────────────────────
+        import wfdb
+        
+        # ── 1. Safely parse and rewrite the .hea file ─────────────────────────
+        import tempfile
+        import uuid
+        
+        session_id = uuid.uuid4().hex[:8]
+        record_name = f"rec_{session_id}"
+        
+        hea_content = (await hea_file.read()).decode("utf-8", errors="ignore")
+        new_hea_lines = []
+        needs_xyz = False
+        first_line_done = False
+        
+        for line in hea_content.splitlines():
+            if not line.strip() or line.startswith('#'):
+                new_hea_lines.append(line)
+                continue
+                
+            parts = line.split()
+            if not first_line_done:
+                parts[0] = record_name
+                first_line_done = True
+            else:
+                if ".dat" in parts[0]:
+                    parts[0] = f"{record_name}.dat"
+                elif ".xyz" in parts[0]:
+                    parts[0] = f"{record_name}.xyz"
+                    needs_xyz = True
+            new_hea_lines.append(" ".join(parts))
+            
+        if needs_xyz and xyz_file is None:
+            return {
+                "error": "Missing XYZ File",
+                "details": "This specific WFDB record expects a 3-lead .xyz Frank orthogonal file constraint in its header, but none was uploaded."
+            }
+            
+        # ── 2. Save the explicitly named files ───────────────────────────────
+        with open(os.path.join(UPLOAD_DIR, f"{record_name}.hea"), "w") as f:
+            f.write("\n".join(new_hea_lines))
+            
+        dat_bytes = await dat_file.read()
+        with open(os.path.join(UPLOAD_DIR, f"{record_name}.dat"), "wb") as f:
+            f.write(dat_bytes)
+            
         if xyz_file is not None:
-            try:
-                xyz_text = (await xyz_file.read()).decode("utf-8", errors="replace")
-                xyz_rows = [
-                    list(map(float, row.split()))
-                    for row in xyz_text.strip().splitlines()
-                    if row.strip()
-                ]
-                xyz_arr = np.array(xyz_rows, dtype=np.float32)
-                print(f"📐 XYZ shape: {xyz_arr.shape}  (stored, not visualized)")
-            except Exception as e:
-                print(f"⚠️  Could not parse .xyz: {e}")
+            xyz_bytes = await xyz_file.read()
+            with open(os.path.join(UPLOAD_DIR, f"{record_name}.xyz"), "wb") as f:
+                f.write(xyz_bytes)
+                    
+        # ── 3. Read the record using official wfdb lib ────────────────────────
+        record_path = os.path.join(UPLOAD_DIR, record_name)
+        record = wfdb.rdrecord(record_path)
+        
+        arr = record.p_signal
+        lead_names = record.sig_name
+        n_samples = arr.shape[0]
+        n_leads = arr.shape[1]
+        fs = record.fs
 
-        # ── 4. Write temporary CSV → reuse existing medical_service ──────────
+        # ── 3. Write temporary CSV → reuse existing medical_service ──────────
         import csv, tempfile
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".csv", delete=False,
@@ -108,7 +115,9 @@ async def process_wfdb(
         ) as tmp:
             tmp_path = tmp.name
             writer = csv.writer(tmp)
-            writer.writerow(lead_names)
+            # Make sure names map exactly, Keras expects I, II, etc.
+            # Convert lowercase 'i' to 'I', 'v1' to 'V1', etc, to match expected names if needed.
+            writer.writerow([n.upper() for n in lead_names])
             for s in range(n_samples):
                 writer.writerow([float(arr[s, ch]) for ch in range(n_leads)])
 
@@ -117,11 +126,18 @@ async def process_wfdb(
 
         try:
             os.remove(tmp_path)
+            # Clean up the binary files too
+            try: os.remove(os.path.join(UPLOAD_DIR, f"{record_name}.hea"))
+            except: pass
+            try: os.remove(os.path.join(UPLOAD_DIR, f"{record_name}.dat"))
+            except: pass
+            try: os.remove(os.path.join(UPLOAD_DIR, f"{record_name}.xyz"))
+            except: pass
         except Exception:
             pass
 
         # Build signals dict for frontend viewer
-        signals = {name: arr[:, i].tolist() for i, name in enumerate(lead_names)}
+        signals = {name.upper(): arr[:, i].tolist() for i, name in enumerate(lead_names)}
         time    = [round(i / fs, 6) for i in range(n_samples)]
 
         return {

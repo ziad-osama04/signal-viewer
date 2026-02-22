@@ -6,36 +6,40 @@ const cards = [
         icon: '🫀',
         name: 'Medical',
         desc: 'ECG signal analysis with AI-powered anomaly detection',
-        gradient: 'from-rose-500/20 to-pink-600/20',
-        border: 'hover:border-rose-500/50',
-        glow: 'hover:shadow-rose-500/20',
+        gradient: 'from-rose-500/10 to-pink-600/10 hover:from-rose-500/20 hover:to-pink-600/20',
+        border: 'border-white/5 hover:border-rose-500/30',
+        glow: 'hover:shadow-[0_0_30px_rgba(244,63,94,0.15)]',
+        delay: 'animation-delay-100'
     },
     {
         to: '/acoustic',
         icon: '🔊',
         name: 'Acoustic',
         desc: 'Doppler effect simulation and drone detection',
-        gradient: 'from-amber-500/20 to-orange-600/20',
-        border: 'hover:border-amber-500/50',
-        glow: 'hover:shadow-amber-500/20',
+        gradient: 'from-amber-500/10 to-orange-600/10 hover:from-amber-500/20 hover:to-orange-600/20',
+        border: 'border-white/5 hover:border-amber-500/30',
+        glow: 'hover:shadow-[0_0_30px_rgba(245,158,11,0.15)]',
+        delay: 'animation-delay-200'
     },
     {
         to: '/finance',
         icon: '📈',
         name: 'Finance',
         desc: 'Market analysis with candlestick charts and forecasting',
-        gradient: 'from-emerald-500/20 to-green-600/20',
-        border: 'hover:border-emerald-500/50',
-        glow: 'hover:shadow-emerald-500/20',
+        gradient: 'from-accent-green/10 to-emerald-600/10 hover:from-accent-green/20 hover:to-emerald-600/20',
+        border: 'border-white/5 hover:border-accent-green/30',
+        glow: 'hover:shadow-[0_0_30px_rgba(16,185,129,0.15)]',
+        delay: 'animation-delay-300'
     },
     {
         to: '/microbiome',
         icon: '🧬',
         name: 'Microbiome',
         desc: 'Gut microbiome diversity and abundance analysis',
-        gradient: 'from-violet-500/20 to-purple-600/20',
-        border: 'hover:border-violet-500/50',
-        glow: 'hover:shadow-violet-500/20',
+        gradient: 'from-violet-500/10 to-purple-600/10 hover:from-violet-500/20 hover:to-purple-600/20',
+        border: 'border-white/5 hover:border-violet-500/30',
+        glow: 'hover:shadow-[0_0_30px_rgba(139,92,246,0.15)]',
+        delay: 'animation-delay-400'
     },
 ]
 
@@ -43,44 +47,53 @@ export default function Landing() {
     const navigate = useNavigate()
 
     return (
-        <div className="min-h-screen bg-dark-bg flex flex-col items-center justify-center px-6 relative overflow-hidden">
+        <div className="min-h-screen bg-dark-bg flex flex-col items-center justify-center px-6 relative overflow-hidden font-sans">
             {/* Background effects */}
-            <div className="absolute inset-0 bg-gradient-to-br from-accent-blue/5 via-transparent to-accent-green/5" />
-            <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-accent-blue/10 rounded-full blur-3xl" />
-            <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-accent-green/10 rounded-full blur-3xl" />
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-dark-card via-dark-bg to-dark-bg" />
+
+            {/* Animated glowing orbs */}
+            <div className="absolute top-[10%] left-[20%] w-[500px] h-[500px] bg-accent-blue/5 rounded-full blur-[120px] animate-pulse-glow" />
+            <div className="absolute bottom-[10%] right-[20%] w-[500px] h-[500px] bg-accent-green/5 rounded-full blur-[120px] animate-pulse-glow" style={{ animationDelay: '1.5s' }} />
 
             {/* Hero */}
-            <div className="relative z-10 text-center mb-16">
-                <div className="flex items-center justify-center gap-3 mb-6">
-                    <span className="text-5xl">⚡</span>
-                    <h1 className="text-6xl font-extrabold text-white tracking-tight">
-                        Signal<span className="text-accent-blue">Viewer</span>
+            <div className="relative z-10 text-center mb-16 animate-fade-in-up">
+                <div className="flex items-center justify-center gap-4 mb-6">
+                    <span className="text-5xl drop-shadow-glow-blue">⚡</span>
+                    <h1 className="text-6xl md:text-7xl font-extrabold text-white tracking-tight">
+                        Signal<span className="text-transparent bg-clip-text bg-gradient-to-r from-accent-blue to-accent-green">Viewer</span>
                     </h1>
                 </div>
-                <p className="text-xl text-gray-400 font-light max-w-lg mx-auto">
-                    Multi-domain signal analysis platform
+                <p className="text-xl text-gray-400 max-w-lg mx-auto font-light tracking-wide">
+                    Enterprise multi-domain signal analysis platform
                 </p>
-                <div className="mt-4 w-24 h-1 bg-gradient-to-r from-accent-blue to-accent-green rounded-full mx-auto" />
             </div>
 
             {/* Cards */}
-            <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 max-w-5xl w-full">
-                {cards.map((card) => (
+            <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 max-w-6xl w-full">
+                {cards.map((card, idx) => (
                     <button
                         key={card.to}
                         onClick={() => navigate(card.to)}
-                        className={`group bg-dark-card border border-dark-border rounded-2xl p-6 text-left transition-all duration-300
-              ${card.border} ${card.glow}
-              hover:shadow-2xl hover:-translate-y-1 hover:scale-[1.02]
-              bg-gradient-to-br ${card.gradient}`}
+                        style={{ animationDelay: `${idx * 100 + 200}ms` }}
+                        className={`group relative overflow-hidden rounded-2xl p-6 text-left transition-all duration-500
+                            bg-white/5 backdrop-blur-xl border ${card.border} ${card.glow}
+                            hover:-translate-y-2 hover:scale-[1.02] cursor-pointer
+                            animate-fade-in-up opacity-0 fill-mode-forwards`}
                     >
-                        <div className="text-4xl mb-4 group-hover:scale-110 transition-transform duration-300">
-                            {card.icon}
-                        </div>
-                        <h3 className="text-lg font-bold text-white mb-1.5">{card.name}</h3>
-                        <p className="text-xs text-gray-400 leading-relaxed">{card.desc}</p>
-                        <div className="mt-4 flex items-center gap-1 text-xs font-medium text-accent-blue opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                            Open viewer →
+                        {/* Interactive gradient overlay */}
+                        <div className={`absolute inset-0 bg-gradient-to-br ${card.gradient} transition-colors duration-500 pointer-events-none`} />
+
+                        <div className="relative z-10">
+                            <div className="text-4xl mb-5 group-hover:scale-110 group-hover:rotate-3 transition-transform duration-500 transform-origin-bottom-left">
+                                {card.icon}
+                            </div>
+                            <h3 className="text-xl font-bold text-white mb-2 tracking-wide">{card.name}</h3>
+                            <p className="text-sm text-gray-400 leading-relaxed font-light">{card.desc}</p>
+
+                            <div className="mt-6 flex items-center gap-2 text-sm font-medium text-white opacity-0 group-hover:opacity-100 transition-all duration-500 transform translate-y-2 group-hover:translate-y-0">
+                                <span className="w-6 h-px bg-white/50"></span>
+                                Explore Module
+                            </div>
                         </div>
                     </button>
                 ))}

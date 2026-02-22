@@ -232,16 +232,15 @@ def _extract_features(X: np.ndarray) -> np.ndarray:
         col = 0
         for c in range(C):
             ch = X[i, :, c]
-            # Always compute all 8 — then slice to n_feats
             all8 = [
                 float(np.mean(ch)),
                 float(np.std(ch)),
                 float(np.min(ch)),
                 float(np.max(ch)),
                 float(np.ptp(ch)),
-                float(skew(ch)),
-                float(sp_kurtosis(ch)),
-                float(np.sqrt(np.mean(ch ** 2))),
+                float(np.nan_to_num(skew(ch), nan=0.0)),
+                float(np.nan_to_num(sp_kurtosis(ch), nan=0.0)),
+                float(np.nan_to_num(np.sqrt(np.mean(ch ** 2)), nan=0.0)),
             ]
             feats[i, col:col+n_feats] = all8[:n_feats]
             col += n_feats

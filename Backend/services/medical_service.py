@@ -1,6 +1,5 @@
 import numpy as np
 import pandas as pd
-import torch
 import sys
 import os
 
@@ -9,6 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.ecg_model_loader import ECGModelLoader
 
 CLASSES = ["NORM", "MI", "STTC", "CD", "HYP"]
+AI_CLASSES = ["1dAVb", "RBBB", "LBBB", "SB", "AF", "ST"]
 
 def load_csv(path):
     """
@@ -80,34 +80,55 @@ def analyze_medical_signal(file_path):
         raw_values = df.values
 
         # --- ResNet AI Analysis ---
-        # The model NEEDS 1000 samples. We take the first 1000 for the report.
+        # The Keras model expects 4096 samples over 12 leads.
         ai_result = {"prediction": "Model Error", "confidence": 0}
         if loader.deep_model:
-            # Helper to crop/pad to exactly 1000 for the AI internal check
+            # Helper to crop/pad to exactly 4096
             def get_ai_window(vals):
-                s = vals[:1000, :12] if vals.shape[1] >= 12 else np.tile(vals[:1000, :], (1, 3))[:, :12]
-                if s.shape[0] < 1000:
-                    s = np.vstack([s, np.zeros((1000 - s.shape[0], 12))])
-                s = (s - np.mean(s)) / (np.std(s) + 1e-8)
-                return torch.tensor(s.T, dtype=torch.float32).unsqueeze(0)
+                s = vals[:, :12] if vals.shape[1] >= 12 else np.tile(vals, (1, 3))[:, :12]
+                if s.shape[0] < 4096:
+                    pad_len = 4096 - s.shape[0]
+                    s = np.pad(s, ((0, pad_len), (0, 0)), mode="constant")
+                elif s.shape[0] > 4096:
+                    s = s[:4096, :]
+                return np.expand_dims(s, axis=0)
 
-            input_tensor = get_ai_window(raw_values).to(loader.device)
-            with torch.no_grad():
-                logits = loader.deep_model(input_tensor)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+            input_tensor = get_ai_window(raw_values)
+            try:
+                probs = loader.deep_model.predict(input_tensor, verbose=0)[0]
+                
+                if all(p < 0.5 for p in probs):
+                    pred_label = "NORM"
+                    conf = 100.0 - round(float(np.max(probs)) * 100, 2)
+                else:
+                    pred_label = AI_CLASSES[np.argmax(probs)]
+                    conf = round(float(np.max(probs)) * 100, 2)
+                
                 ai_result = {
-                    "prediction": CLASSES[logits.argmax(dim=1).item()],
-                    "confidence": round(float(np.max(probs)) * 100, 2)
+                    "prediction": pred_label,
+                    "confidence": conf
                 }
+            except Exception as e:
+                ai_result = {"prediction": f"AI Error: {str(e)}", "confidence": 0}
 
         # --- Random Forest ---
         rf_result = {"prediction": "Model Error"}
-        if loader.classic_model:
-            feats = extract_features_for_rf(raw_values)
-            pred = loader.classic_model.predict(feats)[0]
-            rf_result = {
-                "prediction": CLASSES[pred] if isinstance(pred, int) else str(pred)
-            }
+        if loader.classic_model is not None:
+            try:
+                feats = extract_features_for_rf(raw_values)
+                pred = loader.classic_model.predict(feats)[0]
+                
+                confidence = 0
+                if hasattr(loader.classic_model, "predict_proba"):
+                    probs = loader.classic_model.predict_proba(feats)[0]
+                    confidence = round(float(np.max(probs)) * 100, 2)
+                    
+                rf_result = {
+                    "prediction": CLASSES[int(pred)],
+                    "confidence": confidence
+                }
+            except Exception as e:
+                rf_result = {"prediction": f"ML Error: {str(e)}", "confidence": 0}
 
         # --- RETURN FULL DATA ---
         return {

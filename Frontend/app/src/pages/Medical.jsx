@@ -74,63 +74,7 @@ function binarize(arr) {
 }
 
 // ─── File format parsers ──────────────────────────────────────────────────────
-
-/** Parse .hea header text → { fs, nSamples, nLeads, leadNames, gain[], baseline[], adcRes } */
-function parseHea(text) {
-    const lines = text.trim().split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'))
-    const header = lines[0].trim().split(/\s+/)
-    const nLeads      = parseInt(header[1]) || 1
-    const fs          = parseFloat(header[2]) || 360
-    const nSamplesHdr = parseInt(header[3]) || 0
-    const leads = [], gains = [], baselines = []
-    for (let i = 1; i <= nLeads && i < lines.length; i++) {
-        const p = lines[i].trim().split(/\s+/)
-        // p[2] = gain like "200(0)/mV" or "200/mV" or "200"
-        const gainField = p[2] || '200'
-        const gainRaw   = gainField.split('/')[0].replace(/\(.*?\)/, '')
-        gains.push(parseFloat(gainRaw) || 200)
-        const baseMatch = gainField.match(/\((-?\d+)\)/)
-        baselines.push(baseMatch ? parseInt(baseMatch[1]) : 0)
-        // lead name = last token on signal-spec line
-        leads.push(p[p.length - 1] || `Lead${i}`)
-    }
-    return { fs, nSamples: nSamplesHdr, nLeads, leadNames: leads, gains, baselines }
-}
-
-/** Parse binary .dat — WFDB format 16 (16-bit signed little-endian, multiplexed frames) */
-function parseDat(buffer, meta) {
-    const { nLeads, gains, baselines, nSamples: nSamplesHdr } = meta
-    const totalBytes    = buffer.byteLength
-    const bytesPerFrame = nLeads * 2
-    if (bytesPerFrame === 0) throw new Error('nLeads is 0 — check your .hea file')
-    // Use header nSamples if valid, else derive from file size
-    const nSamples = (nSamplesHdr > 0)
-        ? Math.min(nSamplesHdr, Math.floor(totalBytes / bytesPerFrame))
-        : Math.floor(totalBytes / bytesPerFrame)
-    if (nSamples === 0) throw new Error(`No samples decoded — bytes=${totalBytes} nLeads=${nLeads}`)
-    const view   = new DataView(buffer)
-    const traces = Array.from({ length: nLeads }, () => new Float32Array(nSamples))
-    for (let s = 0; s < nSamples; s++) {
-        const frameOff = s * bytesPerFrame
-        for (let ch = 0; ch < nLeads; ch++) {
-            const off = frameOff + ch * 2
-            if (off + 2 > totalBytes) break   // safety guard for trailing padding
-            const raw = view.getInt16(off, true)
-            traces[ch][s] = (raw - (baselines[ch] || 0)) / (gains[ch] || 200)
-        }
-    }
-    return traces.map(t => Array.from(t))
-}
-
-/** Parse .xyz text (whitespace-separated rows, one column per lead) */
-function parseXyz(text) {
-    const rows = text.trim().split(/\r?\n/).map(r => r.trim().split(/[\s,]+/).map(Number))
-    if (!rows.length) return []
-    const nLeads = rows[0].length
-    const traces = Array.from({ length: nLeads }, () => [])
-    rows.forEach(row => row.forEach((v, i) => { if (i < nLeads) traces[i].push(v) }))
-    return traces
-}
+// Removed local WFDB/XYZ parsers. We now send raw files to Python backend.
 
 // Class label maps
 const ECG_CLASSES = ['NORM', 'MI', 'STTC', 'CD', 'HYP']
@@ -170,9 +114,9 @@ export default function Medical() {
 
     // --- DATA STATE ---
     const [graphData, setGraphData] = useState(null)
-    const [heaMeta, setHeaMeta] = useState(null)
-    const [xyzData, setXyzData] = useState(null)   // stored for model, not visualized
-    const [datFileRef, setDatFileRef] = useState(null)  // raw .dat File object for sending
+    const [heaFileRef, setHeaFileRef] = useState(null)
+    const [datFileRef, setDatFileRef] = useState(null)
+    const [xyzFileRef, setXyzFileRef] = useState(null)
     const [wfdbAnalysing, setWfdbAnalysing] = useState(false)
     const [aiReport, setAiReport] = useState(null)
     const [mlReport, setMlReport] = useState(null)
@@ -251,19 +195,19 @@ export default function Medical() {
                 // EEG — send directly to /api/eeg/process (.npy or .csv)
                 const formData = new FormData()
                 formData.append('file', file)
-                const res  = await fetch('http://127.0.0.1:8000/api/eeg/process', { method: 'POST', body: formData })
+                const res = await fetch('http://127.0.0.1:8000/api/eeg/process', { method: 'POST', body: formData })
                 const data = await res.json()
                 if (data.error) { alert(data.details || data.error); return }
                 // EEG response: { analysis: { cnn, svm }, signals, time }
-                setAiReport(data.analysis?.cnn  ?? data.analysis?.ai_model  ?? null)
-                setMlReport(data.analysis?.svm  ?? data.analysis?.classic_ml ?? null)
+                setAiReport(data.analysis?.cnn ?? data.analysis?.ai_model ?? null)
+                setMlReport(data.analysis?.svm ?? data.analysis?.classic_ml ?? null)
                 const keys = Object.keys(data.signals || {})
                 if (keys.length) _applySignals(keys, keys.map(k => data.signals[k]), data.time)
             } else if (fileFormat === 'csv') {
                 // ECG CSV → backend
                 const formData = new FormData()
                 formData.append('file', file)
-                const res  = await fetch('http://127.0.0.1:8000/api/medical/process', { method: 'POST', body: formData })
+                const res = await fetch('http://127.0.0.1:8000/api/medical/process', { method: 'POST', body: formData })
                 const data = await res.json()
                 if (data.error) { alert(data.details); return }
                 setAiReport(data.analysis.ai_model)
@@ -593,19 +537,18 @@ export default function Medical() {
                                 setFileFormat('csv')
                                 setGraphData(null)
                                 setChannels([])
-                                setHeaMeta(null)
-                                setXyzData(null)
+                                setHeaFileRef(null)
                                 setDatFileRef(null)
+                                setXyzFileRef(null)
                                 setAiReport(null)
                                 setMlReport(null)
                             }}
-                            className={`text-sm py-2 rounded-lg font-semibold transition-colors border ${
-                                signalType === id
-                                    ? id === 'ecg'
-                                        ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
-                                        : 'bg-purple-500/20 border-purple-400 text-purple-300'
-                                    : 'bg-dark-bg border-dark-border text-gray-500 hover:text-gray-300'
-                            }`}
+                            className={`text-sm py-2 rounded-lg font-semibold transition-colors border ${signalType === id
+                                ? id === 'ecg'
+                                    ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
+                                    : 'bg-purple-500/20 border-purple-400 text-purple-300'
+                                : 'bg-dark-bg border-dark-border text-gray-500 hover:text-gray-300'
+                                }`}
                         >{label}</button>
                     ))}
                 </div>
@@ -622,14 +565,13 @@ export default function Medical() {
                     ).map(({ id, label }) => (
                         <button
                             key={id}
-                            onClick={() => { setFileFormat(id); setHeaMeta(null); setXyzData(null); setDatFileRef(null); setAiReport(null); setMlReport(null) }}
-                            className={`text-xs py-1.5 rounded-lg font-mono font-semibold transition-colors border ${
-                                fileFormat === id
-                                    ? signalType === 'eeg'
-                                        ? 'bg-purple-500/20 border-purple-400 text-purple-300'
-                                        : 'bg-accent-blue/20 border-accent-blue text-accent-blue'
-                                    : 'bg-dark-bg border-dark-border text-gray-500 hover:text-gray-300'
-                            }`}
+                            onClick={() => { setFileFormat(id); setHeaFileRef(null); setDatFileRef(null); setXyzFileRef(null); setAiReport(null); setMlReport(null) }}
+                            className={`text-xs py-1.5 rounded-lg font-mono font-semibold transition-colors border ${fileFormat === id
+                                ? signalType === 'eeg'
+                                    ? 'bg-purple-500/20 border-purple-400 text-purple-300'
+                                    : 'bg-accent-blue/20 border-accent-blue text-accent-blue'
+                                : 'bg-dark-bg border-dark-border text-gray-500 hover:text-gray-300'
+                                }`}
                         >{label}</button>
                     ))}
                 </div>
@@ -650,7 +592,7 @@ export default function Medical() {
                 {fileFormat === 'npy' && signalType === 'eeg' && (
                     <>
                         <p className="text-xs text-gray-600 mb-2">
-                            NumPy array — shape (T, 19) or (19, T) or (N, T, 19).<br/>
+                            NumPy array — shape (T, 19) or (19, T) or (N, T, 19).<br />
                             Sliding window (256 samp, step 128) applied automatically.
                         </p>
                         <FileUpload accept=".npy" label="Drop .npy file" onFile={handleFileUpload} />
@@ -661,72 +603,49 @@ export default function Medical() {
                 {fileFormat === 'wfdb' && signalType === 'ecg' && (
                     <div className="space-y-2">
                         {/* ① .hea header */}
-                        <div className={`rounded-lg border p-2 transition-colors ${heaMeta ? 'border-accent-green/50 bg-accent-green/5' : 'border-dark-border'}`}>
-                            <p className={`text-xs font-semibold mb-1.5 ${heaMeta ? 'text-accent-green' : 'text-gray-400'}`}>
-                                {heaMeta ? `✓ ${heaMeta.nLeads} leads @ ${heaMeta.fs} Hz` : '① Header (.hea)'}
+                        <div className={`rounded-lg border p-2 transition-colors ${heaFileRef ? 'border-accent-green/50 bg-accent-green/5' : 'border-dark-border'}`}>
+                            <p className={`text-xs font-semibold mb-1.5 ${heaFileRef ? 'text-accent-green' : 'text-gray-400'}`}>
+                                {heaFileRef ? `✓ Header Uploaded` : '① Header (.hea)'}
                             </p>
                             <FileUpload
                                 accept=".hea"
                                 label="Drop .hea"
-                                onFile={async (file) => {
-                                    if (!file) return
-                                    try {
-                                        const text = await file.text()
-                                        const meta = parseHea(text)
-                                        setHeaMeta(meta)
-                                    } catch(e) { alert('Failed to parse .hea: ' + e.message) }
+                                onFile={(file) => {
+                                    if (file) setHeaFileRef(file)
                                 }}
                             />
                         </div>
 
-                        {/* ② .dat binary signal — needs .hea first */}
-                        <div className={`rounded-lg border p-2 transition-colors ${!heaMeta ? 'opacity-40 pointer-events-none border-dark-border' : 'border-dark-border'}`}>
-                            <p className="text-xs font-semibold text-gray-400 mb-1.5">② Signal (.dat)</p>
+                        {/* ② .dat binary signal */}
+                        <div className={`rounded-lg border p-2 transition-colors ${datFileRef ? 'border-accent-green/50 bg-accent-green/5' : 'border-dark-border'}`}>
+                            <p className={`text-xs font-semibold mb-1.5 ${datFileRef ? 'text-accent-green' : 'text-gray-400'}`}>
+                                {datFileRef ? '✓ Binary Signal Uploaded' : '② Signal (.dat)'}
+                            </p>
                             <FileUpload
                                 accept=".dat"
                                 label="Drop .dat"
-                                onFile={async (file) => {
-                                    if (!file || !heaMeta) return
-                                    setLoading(true)
-                                    setDatFileRef(file)          // keep ref for analysis
-                                    setAiReport(null)
-                                    setMlReport(null)
-                                    try {
-                                        const buf = await file.arrayBuffer()
-                                        const traces = parseDat(buf, heaMeta)
-                                        const n = traces[0]?.length || 0
-                                        const time = Array.from({ length: n }, (_, i) => i / heaMeta.fs)
-                                        _applySignals(heaMeta.leadNames, traces, time)
-                                    } catch(e) { alert('Failed to parse .dat: ' + e.message) }
-                                    finally { setLoading(false) }
+                                onFile={(file) => {
+                                    if (file) setDatFileRef(file)
                                 }}
                             />
                         </div>
 
-                        {/* ③ .xyz — stored for model use, not visualized */}
-                        <div className={`rounded-lg border p-2 transition-colors ${xyzData ? 'border-accent-green/50 bg-accent-green/5' : 'border-dark-border'}`}>
-                            <p className={`text-xs font-semibold mb-1.5 ${xyzData ? 'text-accent-green' : 'text-gray-400'}`}>
-                                {xyzData ? `✓ XYZ loaded: ${xyzData.nLeads} leads × ${xyzData.nSamples} samp` : '③ Frank XYZ (.xyz)'}
+                        {/* ③ .xyz — optional */}
+                        <div className={`rounded-lg border p-2 transition-colors ${xyzFileRef ? 'border-accent-green/50 bg-accent-green/5' : 'border-dark-border'}`}>
+                            <p className={`text-xs font-semibold mb-1.5 ${xyzFileRef ? 'text-accent-green' : 'text-gray-400'}`}>
+                                {xyzFileRef ? `✓ XYZ Uploaded` : '③ Frank XYZ (.xyz)'}
                             </p>
                             <FileUpload
-                                accept=".xyz,.txt"
+                                accept=".xyz,.dat"
                                 label="Drop .xyz"
-                                onFile={async (file) => {
-                                    if (!file) return
-                                    try {
-                                        const text = await file.text()
-                                        const traces = parseXyz(text)
-                                        const n = traces[0]?.length || 0
-                                        // Store raw data for model — visual stays on .dat signal
-                                        setXyzData({ traces, nLeads: traces.length, nSamples: n, raw: text })
-                                    } catch(e) { alert('Failed to parse .xyz: ' + e.message) }
+                                onFile={(file) => {
+                                    if (file) setXyzFileRef(file)
                                 }}
                             />
-                            <p className="text-xs text-gray-600 mt-1">Stored for ML model, not visualized</p>
                         </div>
 
                         {/* ── Send for Analysis ── */}
-                        {datFileRef && heaMeta && (
+                        {datFileRef && heaFileRef && (
                             <button
                                 disabled={wfdbAnalysing}
                                 onClick={async () => {
@@ -735,44 +654,38 @@ export default function Medical() {
                                     setMlReport(null)
                                     try {
                                         const form = new FormData()
-                                        form.append('dat_file', datFileRef)
-                                        form.append('meta', JSON.stringify({
-                                            nLeads:    heaMeta.nLeads,
-                                            fs:        heaMeta.fs,
-                                            nSamples:  heaMeta.nSamples,
-                                            leadNames: heaMeta.leadNames,
-                                            gains:     heaMeta.gains,
-                                            baselines: heaMeta.baselines,
-                                        }))
-                                        if (xyzData?.raw) {
-                                            const xyzBlob = new Blob([xyzData.raw], { type: 'text/plain' })
-                                            form.append('xyz_file', xyzBlob, 'signal.xyz')
+                                        form.append('hea_file', heaFileRef, heaFileRef.name)
+                                        form.append('dat_file', datFileRef, datFileRef.name)
+                                        if (xyzFileRef) {
+                                            form.append('xyz_file', xyzFileRef, xyzFileRef.name)
                                         }
-                                        const res  = await fetch('http://127.0.0.1:8000/api/medical/process-wfdb', {
+                                        const res = await fetch('http://127.0.0.1:8000/api/medical/process-wfdb', {
                                             method: 'POST', body: form
                                         })
                                         const data = await res.json()
                                         if (data.error) {
                                             alert(`Analysis error: ${data.details}`)
                                         } else {
-                                            setAiReport(data.analysis?.ai_model   ?? null)
+                                            setAiReport(data.analysis?.ai_model ?? null)
                                             setMlReport(data.analysis?.classic_ml ?? null)
+
+                                            const keys = Object.keys(data.signals || {})
+                                            if (keys.length) _applySignals(keys, keys.map(k => data.signals[k]), data.time)
                                         }
-                                    } catch(e) {
+                                    } catch (e) {
                                         alert(`Request failed: ${e.message}`)
                                     } finally {
                                         setWfdbAnalysing(false)
                                     }
                                 }}
-                                className={`w-full mt-1 py-2 rounded-lg text-xs font-bold transition-colors border flex items-center justify-center gap-2 ${
-                                    wfdbAnalysing
-                                        ? 'bg-dark-bg border-dark-border text-gray-500 cursor-not-allowed'
-                                        : 'bg-accent-blue/10 border-accent-blue text-accent-blue hover:bg-accent-blue/20'
-                                }`}
+                                className={`w-full mt-1 py-2 rounded-lg text-xs font-bold transition-colors border flex items-center justify-center gap-2 ${wfdbAnalysing
+                                    ? 'bg-dark-bg border-dark-border text-gray-500 cursor-not-allowed'
+                                    : 'bg-accent-blue/10 border-accent-blue text-accent-blue hover:bg-accent-blue/20'
+                                    }`}
                             >
                                 {wfdbAnalysing
-                                    ? <><span className="animate-spin">⟳</span> Analysing…</>
-                                    : '🔬 Send for Analysis'}
+                                    ? <><span className="animate-spin">⟳</span> Rendering...</>
+                                    : '🔬 View & Analyze Signal'}
                             </button>
                         )}
 
@@ -958,13 +871,12 @@ export default function Medical() {
                     <StatCard title={signalType === 'eeg' ? 'CNN Report' : 'AI Report'} className="mb-3">
                         {aiReport ? (
                             <div className="text-xs">
-                                <span className={`px-2 py-0.5 rounded-full font-bold ${
-                                    signalType === 'eeg'
-                                        ? 'bg-purple-500/20 text-purple-300'
-                                        : aiReport.prediction === 'NORM'
-                                            ? 'bg-accent-green/20 text-accent-green'
-                                            : 'bg-red-500/20 text-red-400'
-                                }`}>
+                                <span className={`px-2 py-0.5 rounded-full font-bold ${signalType === 'eeg'
+                                    ? 'bg-purple-500/20 text-purple-300'
+                                    : aiReport.prediction === 'NORM'
+                                        ? 'bg-accent-green/20 text-accent-green'
+                                        : 'bg-red-500/20 text-red-400'
+                                    }`}>
                                     {signalType === 'eeg'
                                         ? resolveLabel(aiReport.class ?? aiReport.prediction, 'eeg')
                                         : (aiReport.prediction ?? resolveLabel(aiReport.class, 'ecg'))
@@ -984,9 +896,8 @@ export default function Medical() {
                     <StatCard title={signalType === 'eeg' ? 'SVM Report' : 'Classic ML (RF)'}>
                         {mlReport ? (
                             <div className="text-xs">
-                                <span className={`px-2 py-0.5 rounded-full font-bold ${
-                                    signalType === 'eeg' ? 'bg-purple-500/20 text-purple-300' : 'bg-accent-blue/20 text-accent-blue'
-                                }`}>
+                                <span className={`px-2 py-0.5 rounded-full font-bold ${signalType === 'eeg' ? 'bg-purple-500/20 text-purple-300' : 'bg-accent-blue/20 text-accent-blue'
+                                    }`}>
                                     {signalType === 'eeg'
                                         ? resolveLabel(mlReport.class ?? mlReport.prediction, 'eeg')
                                         : resolveLabel(mlReport.prediction, 'ecg')
@@ -1021,8 +932,8 @@ export default function Medical() {
                 const mean = rNorm.reduce((s, v) => s + v, 0) / rNorm.length
                 const std = Math.sqrt(rNorm.reduce((s, v) => s + (v - mean) ** 2, 0) / rNorm.length)
                 const revolutions = Math.floor(n / periodicity)
-                const chALabel = channels[chA]?.label || `CH${chA+1}`
-                const chBLabel = channels[chB]?.label || `CH${chB+1}`
+                const chALabel = channels[chA]?.label || `CH${chA + 1}`
+                const chBLabel = channels[chB]?.label || `CH${chB + 1}`
                 return (
                     <StatCard title="Polar Stats">
                         <div className="space-y-1.5 text-xs">
@@ -1047,19 +958,19 @@ export default function Medical() {
                 const n = allSamples ? totalN : Math.min(sampleCount, totalN)
                 const sigA = graphData.traces[chA].slice(0, n)
                 const sigB = graphData.traces[chB].slice(0, n)
-                const chALabel = channels[chA]?.label || `CH${chA+1}`
-                const chBLabel = channels[chB]?.label || `CH${chB+1}`
-                const meanA = sigA.reduce((s,v) => s+v, 0) / n
-                const meanB = sigB.reduce((s,v) => s+v, 0) / n
-                const stdA = Math.sqrt(sigA.reduce((s,v) => s+(v-meanA)**2, 0) / n)
-                const stdB = Math.sqrt(sigB.reduce((s,v) => s+(v-meanB)**2, 0) / n)
+                const chALabel = channels[chA]?.label || `CH${chA + 1}`
+                const chBLabel = channels[chB]?.label || `CH${chB + 1}`
+                const meanA = sigA.reduce((s, v) => s + v, 0) / n
+                const meanB = sigB.reduce((s, v) => s + v, 0) / n
+                const stdA = Math.sqrt(sigA.reduce((s, v) => s + (v - meanA) ** 2, 0) / n)
+                const stdB = Math.sqrt(sigB.reduce((s, v) => s + (v - meanB) ** 2, 0) / n)
                 let minA = sigA[0], maxA = sigA[0]; for (const v of sigA) { if (v < minA) minA = v; if (v > maxA) maxA = v }
                 let minB = sigB[0], maxB = sigB[0]; for (const v of sigB) { if (v < minB) minB = v; if (v > maxB) maxB = v }
                 // Path length (Euclidean sum of steps)
                 let pathLen = 0
-                for (let i = 1; i < n; i++) pathLen += Math.sqrt((sigA[i]-sigA[i-1])**2 + (sigB[i]-sigB[i-1])**2)
+                for (let i = 1; i < n; i++) pathLen += Math.sqrt((sigA[i] - sigA[i - 1]) ** 2 + (sigB[i] - sigB[i - 1]) ** 2)
                 // Cross-correlation at lag 0
-                const cov = sigA.reduce((s,v,i) => s + (v-meanA)*(sigB[i]-meanB), 0) / n
+                const cov = sigA.reduce((s, v, i) => s + (v - meanA) * (sigB[i] - meanB), 0) / n
                 const corr = stdA * stdB > 0 ? cov / (stdA * stdB) : 0
                 return (
                     <StatCard title="Trajectory Stats">

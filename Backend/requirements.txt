@@ -8,3 +8,6 @@ httpx
 pydub
 imageio-ffmpeg
 tensorflow
+matplotlib
+wfdb
+seaborn
